@@ -6,4 +6,4 @@
 ![alt text](image-2.png)
 # Out put
 ![alt text](image-3.png)
-# Also create a S3 backedn to only store terraform state not loc storing as a single user use case
+# Also create a S3 backend to only store terraform state not loc storing as a single user use case
