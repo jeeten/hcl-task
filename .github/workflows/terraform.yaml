@@ -1,0 +1,131 @@
+name: Terraform Deployment (Dev Only)
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  terraform:
+    name: Terraform Workflow
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: us-east-1
+      ACCOUNT_ID: ${{ secrets.ACCOUNT_ID }}
+
+    steps:
+      # Checkout the code
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS Credentials
+        run: |
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+          aws configure set region $AWS_REGION
+
+      # Setup Terraform environment
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.10.0
+
+      # - name: List Files in Terraform Config Directory
+      #   run: |
+      #     ls -al
+      #     ls -al infra/environments/dev
+       # Download the Terraform state file if it exists
+      # - name: Download Terraform State File if Exists
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: terraform-state-file
+      #     path: infra/environments/dev
+      #   continue-on-error: true    
+
+      # Terraform Init (no need to change directory here)
+      - name: Terraform Init
+        run: |
+          cd infra/environments/dev
+          terraform init -force-copy
+          # terraform init
+
+      - name: Refresh Terraform State
+        run: |
+          cd infra/environments/dev
+          terraform refresh    
+
+      # Terraform Plan
+      - name: Terraform Plan
+        run: |
+          cd infra/environments/dev
+          terraform plan -var-file=terraform.tfvars
+
+      # Terraform Apply
+      - name: Terraform Apply
+        run: |
+          cd infra/environments/dev
+          terraform apply -var-file=terraform.tfvars -auto-approve
+      # Commit and Push Terraform State (if changed)
+       # Upload Terraform State File as Artifact
+      # - name: Upload Terraform State File as Artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: terraform-state-file
+      #     path: infra/environments/dev/terraform.tfstate
+      # Step 2: Set up Docker Buildx (needed for building multi-platform images, optional but recommended)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      # Step 3: Log in to AWS ECR
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Set dynamic image tag
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          IMAGE_TAG="lambda-docker-image:${TIMESTAMP}"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
+         
+          docker build -t lambda-function-image ./lambda
+          docker tag lambda-function-image:latest $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_TAG
+          docker push $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_TAG
+
+      - name: Check Lambda Function and Update/Create
+        run: |
+        
+          FUNCTION_EXISTS=$(aws lambda get-function --function-name dev-my-lambda --region $AWS_REGION --query 'Configuration.FunctionName' --output text 2>/dev/null)
+
+          if [ "$FUNCTION_EXISTS" == "dev-my-lambda" ]; then
+            # Function exists, so update it
+            echo "Updating Lambda function..."
+            aws lambda update-function-code \
+              --function-name dev-my-lambda \
+              --image-uri $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_TAG \
+              --region $AWS_REGION
+          else
+            # Function does not exist, create it
+            echo "Creating Lambda function..."
+            aws lambda create-function \
+              --function-name dev-my-lambda \
+              --role arn:aws:iam::$ACCOUNT_ID:role/lambda_execution_role \
+              --code ImageUri=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_TAG \
+              --region $AWS_REGION \
+              --package-type Image \
+              --timeout 30 \
+              --memory-size 512
+          fi
+
+      - name: Update Lambda Image URI in Terraform
+        run: |
+          cd infra/environments/dev
+          terraform apply \
+          -var="lambda_image_uri=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_TAG" \
+          -var="lambda_invoke_arn=arn:aws:lambda:us-east-1:248189927181:function:dev-my-lambda" \
+          -var-file="terraform.tfvars" \
+          -auto-approve

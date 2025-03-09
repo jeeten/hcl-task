@@ -1,0 +1,14 @@
+.terraform/
+# *.tfstate
+*.tfstate.backup
+*.hcl
+*.plan
+*.backup
+
+# Ignore Terraform lock files
+.terraform.lock.hcl
+
+# Ignore logs and temp files
+*.log
+*.tmp
+*.bak
